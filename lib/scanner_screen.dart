@@ -1,25 +1,36 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'dart:ui';
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 // Fraction of the frame sent to ML Kit (centre region).
-const _cropFraction = 0.65;
+// Smaller = tighter internal crop = text appears larger to OCR.
+const _cropFraction = 0.40;
+
+const _neonGreen = Color(0xFF00E676);
+const _glassWhite = Color(0x4DFFFFFF);
+const _glassBorder = Color(0x33FFFFFF);
 
 class ScannerScreen extends StatefulWidget {
-  final String searchWord;
-  const ScannerScreen({super.key, required this.searchWord});
+  const ScannerScreen({super.key});
 
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
 }
 
-class _ScannerScreenState extends State<ScannerScreen> {
+class _ScannerScreenState extends State<ScannerScreen>
+    with SingleTickerProviderStateMixin {
   CameraController? _cameraController;
   late final TextRecognizer _textRecognizer;
+  final _searchCtl = TextEditingController();
+  final _searchFocusNode = FocusNode();
+  bool _cameraReady = false;
+  final List<String> _recentSearches = [];
   bool _isProcessing = false;
   bool _isDisposed = false;
   int _lastProcessedTimestamp = 0;
@@ -27,17 +38,40 @@ class _ScannerScreenState extends State<ScannerScreen> {
   List<Rect> _displayRects = [];
   Size? _displayImageSize;
   Timer? _persistTimer;
+  bool _isScanning = false;
+  bool _flashOn = false;
 
   // Rolling window of recent frame results: true = any text detected, false = none
   final List<bool> _recentFrameResults = [];
   static const _rollingWindowSize = 12;
   _ScanQuality _scanQuality = _ScanQuality.initializing;
 
+  late final AnimationController _pulseCtl;
+  static const _prefsKey = 'recent_searches';
+
   @override
   void initState() {
     super.initState();
     _textRecognizer = TextRecognizer();
-    _initCamera();
+    _pulseCtl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    )..repeat(reverse: true);
+    _searchFocusNode.addListener(() => setState(() {}));
+    _loadRecentSearches();
+  }
+
+  Future<void> _loadRecentSearches() async {
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getStringList(_prefsKey);
+    if (saved != null && mounted) {
+      setState(() => _recentSearches.addAll(saved));
+    }
+  }
+
+  Future<void> _saveRecentSearches() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(_prefsKey, _recentSearches);
   }
 
   Future<void> _initCamera() async {
@@ -47,7 +81,6 @@ class _ScannerScreenState extends State<ScannerScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Camera permission denied')),
         );
-        Navigator.pop(context);
       }
       return;
     }
@@ -57,7 +90,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
 
     _cameraController = CameraController(
       cameras.first,
-      ResolutionPreset.high,
+      ResolutionPreset.max,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.nv21,
     );
@@ -65,11 +98,12 @@ class _ScannerScreenState extends State<ScannerScreen> {
     await _cameraController!.initialize();
     if (!mounted) return;
 
-    // 2.5x zoom so small text is legible from ~2 m away
+    // Optical/digital zoom for ~1 m reading distance
     try {
       final maxZoom = await _cameraController!.getMaxZoomLevel();
-      final targetZoom = 3.0.clamp(1.0, maxZoom);
+      final targetZoom = 2.0.clamp(1.0, maxZoom);
       await _cameraController!.setZoomLevel(targetZoom);
+      debugPrint('Zoom set to $targetZoom (max: $maxZoom)');
     } catch (e) {
       debugPrint('Zoom not supported: $e');
     }
@@ -81,12 +115,13 @@ class _ScannerScreenState extends State<ScannerScreen> {
       debugPrint('Focus control not supported: $e');
     }
 
-    setState(() {});
+    if (!mounted) return;
+    setState(() => _cameraReady = true);
     await _cameraController!.startImageStream(_processImage);
   }
 
   Future<void> _processImage(CameraImage image) async {
-    if (_isProcessing || _isDisposed) return;
+    if (_isProcessing || _isDisposed || !_isScanning) return;
     final now = DateTime.now().millisecondsSinceEpoch;
     if (now - _lastProcessedTimestamp < _frameIntervalMs) return;
     _isProcessing = true;
@@ -103,13 +138,19 @@ class _ScannerScreenState extends State<ScannerScreen> {
       final anyTextDetected = result.blocks.isNotEmpty;
       _updateScanQuality(anyTextDetected);
 
-      final needle = widget.searchWord.toLowerCase();
+      final words = _searchCtl.text
+          .trim()
+          .toLowerCase()
+          .split(RegExp(r'\s+'))
+          .where((w) => w.isNotEmpty)
+          .toList();
       final rects = <Rect>[];
 
       for (final block in result.blocks) {
         for (final line in block.lines) {
           for (final element in line.elements) {
-            if (element.text.toLowerCase().contains(needle)) {
+            final elLower = element.text.toLowerCase();
+            if (words.any((w) => elLower.contains(w))) {
               // Shift from cropped-image coords to full-image coords
               rects.add(element.boundingBox.shift(crop.rotatedOffset));
             }
@@ -261,9 +302,73 @@ class _ScannerScreenState extends State<ScannerScreen> {
     return _CropResult(inputImage: inputImage, rotatedOffset: rotatedOffset);
   }
 
+  void _goBackToWelcome() {
+    _cameraController?.stopImageStream().catchError((_) {});
+    _cameraController?.dispose();
+    _cameraController = null;
+    setState(() {
+      _cameraReady = false;
+      _isScanning = false;
+      _flashOn = false;
+      _displayRects = [];
+      _displayImageSize = null;
+      _scanQuality = _ScanQuality.initializing;
+      _recentFrameResults.clear();
+    });
+  }
+
+  Future<void> _toggleFlash() async {
+    if (_cameraController == null) return;
+    try {
+      _flashOn = !_flashOn;
+      await _cameraController!.setFlashMode(
+        _flashOn ? FlashMode.torch : FlashMode.off,
+      );
+      setState(() {});
+    } catch (e) {
+      debugPrint('Flash error: $e');
+    }
+  }
+
+  void _toggleScanning() {
+    if (_isScanning) {
+      setState(() {
+        _isScanning = false;
+        _displayRects = [];
+        _displayImageSize = null;
+        _scanQuality = _ScanQuality.initializing;
+        _recentFrameResults.clear();
+      });
+    } else {
+      _startScan();
+    }
+  }
+
+  Future<void> _startScan() async {
+    final term = _searchCtl.text.trim();
+    if (term.isEmpty) return;
+
+    // Save to recent searches
+    _recentSearches.remove(term);
+    _recentSearches.insert(0, term);
+    if (_recentSearches.length > 10) _recentSearches.removeLast();
+    _saveRecentSearches();
+
+    _searchFocusNode.unfocus();
+
+    if (!_cameraReady) {
+      await _initCamera();
+    }
+    if (!mounted || !_cameraReady) return;
+    setState(() => _isScanning = true);
+  }
+
   @override
   void dispose() {
     _isDisposed = true;
+    _pulseCtl.dispose();
+    _searchFocusNode.dispose();
+    _searchCtl.dispose();
     _persistTimer?.cancel();
     _cameraController?.stopImageStream().catchError((_) {});
     _cameraController?.dispose();
@@ -297,7 +402,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       key: ValueKey(_scanQuality),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: bg.withOpacity(0.85),
+        color: bg.withValues(alpha: 0.85),
         borderRadius: BorderRadius.circular(20),
       ),
       child: Row(
@@ -321,79 +426,413 @@ class _ScannerScreenState extends State<ScannerScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final controller = _cameraController;
-    if (controller == null || !controller.value.isInitialized) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Scanning...')),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
+  // ---- Build helpers ----
 
-    return Scaffold(
-      appBar: AppBar(title: Text('Looking for "${widget.searchWord}"')),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          return Stack(
-            fit: StackFit.expand,
-            children: [
-              CameraPreview(controller),
-              // Scanning guide: dims area outside the centre crop window
-              CustomPaint(
-                painter: _ScanGuidePainter(cropFraction: _cropFraction),
+  Widget _buildTitle(EdgeInsets pad) {
+    return Positioned(
+      top: pad.top + 12,
+      left: 0,
+      right: 0,
+      child: Center(
+        child: Text(
+          'Shelf Lookup',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.45),
+            fontSize: 14,
+            fontWeight: FontWeight.w300,
+            letterSpacing: 2.0,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchColumn({required bool showScanButton}) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Search input
+        ClipRRect(
+          borderRadius: BorderRadius.circular(30),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+            child: Container(
+              decoration: BoxDecoration(
+                color: _glassWhite,
+                borderRadius: BorderRadius.circular(30),
+                border: Border.all(color: _glassBorder),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.15),
+                    blurRadius: 20,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
               ),
-              // Dynamic speed indicator
-              if (_scanQuality != _ScanQuality.initializing)
-                Positioned(
-                  top: 12,
-                  left: 16,
-                  right: 16,
-                  child: Center(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 300),
-                      child: _buildSpeedBanner(),
-                    ),
+              child: TextField(
+                controller: _searchCtl,
+                focusNode: _searchFocusNode,
+                style: const TextStyle(color: Colors.white, fontSize: 16),
+                textInputAction: TextInputAction.search,
+                onSubmitted: (_) => _startScan(),
+                decoration: InputDecoration(
+                  hintText: 'What are you looking for?',
+                  hintStyle:
+                      TextStyle(color: Colors.white.withValues(alpha: 0.5)),
+                  prefixIcon: Icon(Icons.search,
+                      color: Colors.white.withValues(alpha: 0.7)),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 16),
+                ),
+              ),
+            ),
+          ),
+        ),
+
+        // Recent searches dropdown
+        if (_searchFocusNode.hasFocus && _recentSearches.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(16),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: _glassWhite,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: _glassBorder),
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+                        child: Row(
+                          children: [
+                            Icon(Icons.history,
+                                color: Colors.white.withValues(alpha: 0.4),
+                                size: 14),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Recent searches',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.4),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ..._recentSearches.map((term) => InkWell(
+                            onTap: () {
+                              _searchCtl.text = term;
+                              _searchCtl.selection = TextSelection.collapsed(
+                                  offset: term.length);
+                              _startScan();
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.only(
+                                  left: 16, top: 10, bottom: 10, right: 8),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.search,
+                                      color: Colors.white54, size: 18),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Text(term,
+                                        style: const TextStyle(
+                                            color: Colors.white70,
+                                            fontSize: 15),
+                                        overflow: TextOverflow.ellipsis),
+                                  ),
+                                  GestureDetector(
+                                    onTap: () {
+                                      setState(() {
+                                        _recentSearches.remove(term);
+                                      });
+                                      _saveRecentSearches();
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.all(4),
+                                      child: Icon(Icons.close,
+                                          color: Colors.white.withValues(alpha: 0.35),
+                                          size: 16),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          )),
+                      const SizedBox(height: 4),
+                    ],
                   ),
                 ),
-              if (_displayImageSize != null && _displayRects.isNotEmpty)
-                CustomPaint(
-                  painter: _HighlightPainter(
-                    matchRects: _displayRects,
-                    imageSize: _displayImageSize!,
-                    sensorOrientation:
-                        controller.description.sensorOrientation,
+              ),
+            ),
+          ),
+
+        // Scan button (only in input mode)
+        if (showScanButton)
+          Padding(
+            padding: const EdgeInsets.only(top: 16),
+            child: SizedBox(
+              width: double.infinity,
+              height: 52,
+              child: ElevatedButton(
+                onPressed: _startScan,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: _neonGreen,
+                  foregroundColor: Colors.black,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(26),
+                  ),
+                  elevation: 0,
+                ),
+                child: const Text('Scan',
+                    style: TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.w600)),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSearchBar(EdgeInsets pad, {required bool showScanButton}) {
+    return Positioned(
+      top: pad.top + 38,
+      left: 16,
+      right: 16,
+      child: _buildSearchColumn(showScanButton: showScanButton),
+    );
+  }
+
+  Widget _buildBottomBar(EdgeInsets pad) {
+    return Positioned(
+      bottom: pad.bottom + 16,
+      left: 16,
+      right: 16,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(28),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: _glassWhite,
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: _glassBorder),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                // Flash toggle
+                IconButton(
+                  onPressed: _toggleFlash,
+                  icon: Icon(
+                    _flashOn ? Icons.flash_on : Icons.flash_off,
+                    color: _flashOn ? _neonGreen : Colors.white70,
+                    size: 26,
                   ),
                 ),
-              if (_displayRects.isNotEmpty)
-                Positioned(
-                  bottom: 32,
-                  left: 16,
-                  right: 16,
-                  child: Center(
+                // Pulsing scan button
+                ScaleTransition(
+                  scale: _isScanning
+                      ? Tween(begin: 1.0, end: 1.12)
+                          .animate(CurvedAnimation(
+                          parent: _pulseCtl,
+                          curve: Curves.easeInOut,
+                        ))
+                      : const AlwaysStoppedAnimation(1.0),
+                  child: GestureDetector(
+                    onTap: _toggleScanning,
                     child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 20,
-                        vertical: 12,
-                      ),
+                      width: 64,
+                      height: 64,
                       decoration: BoxDecoration(
-                        color: Colors.green.shade700,
-                        borderRadius: BorderRadius.circular(24),
+                        shape: BoxShape.circle,
+                        color: _isScanning
+                            ? _neonGreen
+                            : Colors.white.withValues(alpha: 0.15),
+                        border: Border.all(
+                          color: _isScanning
+                              ? _neonGreen
+                              : Colors.white54,
+                          width: 3,
+                        ),
+                        boxShadow: _isScanning
+                            ? [
+                                BoxShadow(
+                                  color: _neonGreen.withValues(alpha: 0.4),
+                                  blurRadius: 18,
+                                  spreadRadius: 2,
+                                )
+                              ]
+                            : null,
                       ),
-                      child: Text(
-                        'Found "${widget.searchWord}"!',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+                      child: Center(
+                        child: Text(
+                          _isScanning ? 'Stop' : 'Scan',
+                          style: TextStyle(
+                            color: _isScanning ? Colors.black : Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
-            ],
-          );
-        },
+                // Back to welcome
+                IconButton(
+                  onPressed: _goBackToWelcome,
+                  icon: const Icon(Icons.arrow_back,
+                      color: Colors.white70, size: 26),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final pad = MediaQuery.of(context).padding;
+    final controller = _cameraController;
+    final cameraActive =
+        controller != null && controller.value.isInitialized && _cameraReady;
+
+    // ---------- Input-first mode (no camera yet) ----------
+    if (!cameraActive) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF121212),
+        resizeToAvoidBottomInset: true,
+        body: Center(
+          child: SingleChildScrollView(
+            padding: EdgeInsets.only(
+              top: pad.top + 40,
+              bottom: pad.bottom + 40,
+              left: 16,
+              right: 16,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Shelf Lookup',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 26,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                _buildSearchColumn(showScanButton: true),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    // ---------- Camera scanning mode ----------
+    return Scaffold(
+      backgroundColor: Colors.black,
+      resizeToAvoidBottomInset: false,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          // ---- Camera background ----
+          CameraPreview(controller),
+
+          // ---- Scan-area guide (subtle dim) ----
+          CustomPaint(
+            painter: _ScanGuidePainter(cropFraction: _cropFraction),
+          ),
+
+          // ---- AR corner-bracket highlights ----
+          if (_displayImageSize != null && _displayRects.isNotEmpty)
+            CustomPaint(
+              painter: _CornerBracketPainter(
+                matchRects: _displayRects,
+                imageSize: _displayImageSize!,
+                sensorOrientation:
+                    controller.description.sensorOrientation,
+              ),
+            ),
+
+          // ---- Title ----
+          _buildTitle(pad),
+
+          // ---- Search bar (no Scan button in camera mode) ----
+          _buildSearchBar(pad, showScanButton: false),
+
+          // ---- Speed banner (below search bar) ----
+          if (_isScanning && _scanQuality != _ScanQuality.initializing)
+            Positioned(
+              top: pad.top + 106,
+              left: 16,
+              right: 16,
+              child: Center(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: _buildSpeedBanner(),
+                ),
+              ),
+            ),
+
+          // ---- "Found" notification above bottom bar ----
+          if (_displayRects.isNotEmpty)
+            Positioned(
+              bottom: pad.bottom + 110,
+              left: 16,
+              right: 16,
+              child: Center(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(24),
+                  child: BackdropFilter(
+                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: _neonGreen.withValues(alpha: 0.25),
+                        borderRadius: BorderRadius.circular(24),
+                        border: Border.all(
+                            color: _neonGreen.withValues(alpha: 0.6)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.check_circle,
+                              color: _neonGreen, size: 22),
+                          const SizedBox(width: 10),
+                          Text(
+                            'Found "${_searchCtl.text.trim()}"!',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // ---- Glass bottom action bar ----
+          _buildBottomBar(pad),
+        ],
       ),
     );
   }
@@ -420,7 +859,7 @@ class _ScanGuidePainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final guideW = size.width * cropFraction;
-    final guideH = size.height * cropFraction;
+    final guideH = size.height * 0.45;
     final left = (size.width - guideW) / 2;
     final top = (size.height - guideH) / 2;
     final guideRect = Rect.fromLTWH(left, top, guideW, guideH);
@@ -480,14 +919,14 @@ class _ScanGuidePainter extends CustomPainter {
 }
 
 // ---------------------------------------------------------------------------
-// Painter: green bounding boxes on matched text
+// Painter: neon-green corner brackets on matched text
 // ---------------------------------------------------------------------------
-class _HighlightPainter extends CustomPainter {
+class _CornerBracketPainter extends CustomPainter {
   final List<Rect> matchRects;
   final Size imageSize;
   final int sensorOrientation;
 
-  _HighlightPainter({
+  _CornerBracketPainter({
     required this.matchRects,
     required this.imageSize,
     required this.sensorOrientation,
@@ -497,17 +936,12 @@ class _HighlightPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     if (matchRects.isEmpty) return;
 
-    final fillPaint = Paint()
-      ..color = const Color(0x4400E676)
-      ..style = PaintingStyle.fill;
-
-    final strokePaint = Paint()
-      ..color = const Color(0xFF00E676)
+    final paint = Paint()
+      ..color = _neonGreen
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0;
+      ..strokeWidth = 3.0
+      ..strokeCap = StrokeCap.round;
 
-    // ML Kit returns bounding boxes in the rotated (upright) coordinate space.
-    // Most Android rear cameras have sensorOrientation == 90.
     double rotatedW, rotatedH;
     if (sensorOrientation == 90 || sensorOrientation == 270) {
       rotatedW = imageSize.height;
@@ -527,13 +961,28 @@ class _HighlightPainter extends CustomPainter {
         rect.right * scaleX,
         rect.bottom * scaleY,
       );
-      final rrect = RRect.fromRectAndRadius(scaled, const Radius.circular(4));
-      canvas.drawRRect(rrect, fillPaint);
-      canvas.drawRRect(rrect, strokePaint);
+
+      // Corner bracket length: ~20% of shorter side, capped at 18px
+      final cLen = (scaled.shortestSide * 0.2).clamp(8.0, 18.0);
+      final l = scaled.left, t = scaled.top;
+      final r = scaled.right, b = scaled.bottom;
+
+      // Top-left
+      canvas.drawLine(Offset(l, t + cLen), Offset(l, t), paint);
+      canvas.drawLine(Offset(l, t), Offset(l + cLen, t), paint);
+      // Top-right
+      canvas.drawLine(Offset(r - cLen, t), Offset(r, t), paint);
+      canvas.drawLine(Offset(r, t), Offset(r, t + cLen), paint);
+      // Bottom-left
+      canvas.drawLine(Offset(l, b - cLen), Offset(l, b), paint);
+      canvas.drawLine(Offset(l, b), Offset(l + cLen, b), paint);
+      // Bottom-right
+      canvas.drawLine(Offset(r, b - cLen), Offset(r, b), paint);
+      canvas.drawLine(Offset(r - cLen, b), Offset(r, b), paint);
     }
   }
 
   @override
-  bool shouldRepaint(_HighlightPainter oldDelegate) =>
+  bool shouldRepaint(_CornerBracketPainter oldDelegate) =>
       oldDelegate.matchRects != matchRects;
 }
