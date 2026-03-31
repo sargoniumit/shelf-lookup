@@ -435,7 +435,7 @@ class _ScannerScreenState extends State<ScannerScreen>
       right: 0,
       child: Center(
         child: Text(
-          'Shelf Lookup',
+          'SpotText',
           style: TextStyle(
             color: Colors.white.withValues(alpha: 0.45),
             fontSize: 14,
@@ -725,7 +725,7 @@ class _ScannerScreenState extends State<ScannerScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Shelf Lookup',
+                  'SpotText',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 26,
