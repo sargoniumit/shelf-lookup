@@ -8,6 +8,9 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'screens/paywall_screen.dart';
+import 'services/usage_service.dart';
+
 // Fraction of the frame sent to ML Kit (centre region).
 // Smaller = tighter internal crop = text appears larger to OCR.
 const _cropFraction = 0.40;
@@ -40,6 +43,9 @@ class _ScannerScreenState extends State<ScannerScreen>
   Timer? _persistTimer;
   bool _isScanning = false;
   bool _flashOn = false;
+  final _usageService = UsageService();
+  int _remainingScans = 20;
+  bool _isPremiumUser = false;
 
   // Rolling window of recent frame results: true = any text detected, false = none
   final List<bool> _recentFrameResults = [];
@@ -59,6 +65,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     )..repeat(reverse: true);
     _searchFocusNode.addListener(() => setState(() {}));
     _loadRecentSearches();
+    _loadUsageInfo();
   }
 
   Future<void> _loadRecentSearches() async {
@@ -66,6 +73,17 @@ class _ScannerScreenState extends State<ScannerScreen>
     final saved = prefs.getStringList(_prefsKey);
     if (saved != null && mounted) {
       setState(() => _recentSearches.addAll(saved));
+    }
+  }
+
+  Future<void> _loadUsageInfo() async {
+    final remaining = await _usageService.getRemainingScans();
+    final premium = await _usageService.isPremium();
+    if (mounted) {
+      setState(() {
+        _remainingScans = remaining;
+        _isPremiumUser = premium;
+      });
     }
   }
 
@@ -145,6 +163,7 @@ class _ScannerScreenState extends State<ScannerScreen>
           .where((w) => w.isNotEmpty)
           .toList();
       final rects = <Rect>[];
+      final matchedTexts = <String>[];
 
       for (final block in result.blocks) {
         for (final line in block.lines) {
@@ -153,6 +172,7 @@ class _ScannerScreenState extends State<ScannerScreen>
             if (words.any((w) => elLower.contains(w))) {
               // Shift from cropped-image coords to full-image coords
               rects.add(element.boundingBox.shift(crop.rotatedOffset));
+              matchedTexts.add(element.text);
             }
           }
         }
@@ -165,6 +185,12 @@ class _ScannerScreenState extends State<ScannerScreen>
         if (rects.isNotEmpty) {
           _persistTimer?.cancel();
           _persistTimer = null;
+          await _usageService.decrementScanCount(matchedTexts.join(' '));
+          await _loadUsageInfo();
+          if (_remainingScans <= 0 && !_isPremiumUser) {
+            _stopAndShowPaywall();
+            return;
+          }
           setState(() {
             _displayRects = rects;
             _displayImageSize = fullSize;
@@ -302,6 +328,29 @@ class _ScannerScreenState extends State<ScannerScreen>
     return _CropResult(inputImage: inputImage, rotatedOffset: rotatedOffset);
   }
 
+  void _stopAndShowPaywall() {
+    setState(() {
+      _isScanning = false;
+      _displayRects = [];
+      _displayImageSize = null;
+      _scanQuality = _ScanQuality.initializing;
+      _recentFrameResults.clear();
+    });
+    _showPaywall();
+  }
+
+  Future<void> _showPaywall() async {
+    await Navigator.of(context).push(
+      PageRouteBuilder(
+        opaque: false,
+        pageBuilder: (context, animation, secondaryAnimation) => const PaywallScreen(),
+        transitionsBuilder: (context, anim, secondaryAnimation, child) =>
+            FadeTransition(opacity: anim, child: child),
+      ),
+    );
+    _loadUsageInfo();
+  }
+
   void _goBackToWelcome() {
     _cameraController?.stopImageStream().catchError((_) {});
     _cameraController?.dispose();
@@ -347,6 +396,13 @@ class _ScannerScreenState extends State<ScannerScreen>
   Future<void> _startScan() async {
     final term = _searchCtl.text.trim();
     if (term.isEmpty) return;
+
+    // Check scan budget before starting
+    final remaining = await _usageService.getRemainingScans();
+    if (remaining <= 0 && !(await _usageService.isPremium())) {
+      _showPaywall();
+      return;
+    }
 
     // Save to recent searches
     _recentSearches.remove(term);
@@ -770,6 +826,38 @@ class _ScannerScreenState extends State<ScannerScreen>
 
           // ---- Title ----
           _buildTitle(pad),
+
+          // ---- Scan counter (top-right, below title) ----
+          if (!_isPremiumUser)
+            Positioned(
+              top: pad.top + 10,
+              right: 16,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(14),
+                child: BackdropFilter(
+                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: _glassWhite,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: _glassBorder),
+                    ),
+                    child: Text(
+                      'Free scans: $_remainingScans/20',
+                      style: TextStyle(
+                        color: _remainingScans < 5
+                            ? Colors.orangeAccent
+                            : Colors.white70,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
 
           // ---- Search bar (no Scan button in camera mode) ----
           _buildSearchBar(pad, showScanButton: false),
