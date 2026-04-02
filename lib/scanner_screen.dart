@@ -6,6 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'screens/paywall_screen.dart';
@@ -49,6 +50,9 @@ class _ScannerScreenState extends State<ScannerScreen>
   int _remainingScans = 20;
   bool _isPremiumUser = false;
   bool _isListening = false;
+  bool _isBuyingFromHome = false;
+  StreamSubscription<List<PurchaseDetails>>? _iapSubscription;
+  static const _productId = 'spottext_full_unlock';
 
   // Rolling window of recent frame results: true = any text detected, false = none
   final List<bool> _recentFrameResults = [];
@@ -69,6 +73,11 @@ class _ScannerScreenState extends State<ScannerScreen>
     _searchFocusNode.addListener(() => setState(() {}));
     _loadRecentSearches();
     _loadUsageInfo();
+    _iapSubscription = InAppPurchase.instance.purchaseStream.listen(
+      _onHomePurchaseUpdated,
+      onDone: () => _iapSubscription?.cancel(),
+      onError: (error) => debugPrint('IAP stream error: $error'),
+    );
   }
 
   Future<void> _loadRecentSearches() async {
@@ -453,6 +462,88 @@ class _ScannerScreenState extends State<ScannerScreen>
     setState(() => _isScanning = true);
   }
 
+  Future<void> _buyProductFromHome() async {
+    setState(() => _isBuyingFromHome = true);
+
+    final iap = InAppPurchase.instance;
+    final available = await iap.isAvailable();
+    if (!available) {
+      if (mounted) {
+        setState(() => _isBuyingFromHome = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Prodavnica trenutno nije dostupna.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      return;
+    }
+
+    final response = await iap.queryProductDetails({_productId});
+    if (response.productDetails.isEmpty) {
+      if (mounted) {
+        setState(() => _isBuyingFromHome = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Proizvod nije pronađen.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      return;
+    }
+
+    final product = response.productDetails.first;
+    await iap.buyNonConsumable(
+      purchaseParam: PurchaseParam(productDetails: product),
+    );
+  }
+
+  Future<void> _onHomePurchaseUpdated(
+      List<PurchaseDetails> purchases) async {
+    for (final purchase in purchases) {
+      if (purchase.productID == _productId) {
+        switch (purchase.status) {
+          case PurchaseStatus.purchased:
+          case PurchaseStatus.restored:
+            if (purchase.pendingCompletePurchase) {
+              await InAppPurchase.instance.completePurchase(purchase);
+            }
+            await _usageService.setPremium(true);
+            await _loadUsageInfo();
+            if (mounted) {
+              setState(() => _isBuyingFromHome = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content:
+                      Text('Uspeh! SpotText Unlimited je aktiviran.'),
+                  backgroundColor: _neonGreen,
+                ),
+              );
+            }
+            break;
+          case PurchaseStatus.error:
+            if (mounted) {
+              setState(() => _isBuyingFromHome = false);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Došlo je do greške. Pokušajte ponovo.'),
+                  backgroundColor: Colors.redAccent,
+                ),
+              );
+            }
+            break;
+          case PurchaseStatus.canceled:
+            if (mounted) setState(() => _isBuyingFromHome = false);
+            break;
+          case PurchaseStatus.pending:
+            break;
+        }
+      }
+    }
+  }
+
   @override
   void dispose() {
     _isDisposed = true;
@@ -461,6 +552,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     _searchCtl.dispose();
     _persistTimer?.cancel();
     _sttService.dispose();
+    _iapSubscription?.cancel();
     _cameraController?.stopImageStream().catchError((_) {});
     _cameraController?.dispose();
     _textRecognizer.close();
@@ -700,6 +792,56 @@ class _ScannerScreenState extends State<ScannerScreen>
               ),
             ),
           ),
+
+        // Promo text (only for non-premium users)
+        if (showScanButton && !_isPremiumUser) ...[
+          Padding(
+            padding: const EdgeInsets.only(top: 14),
+            child: Text(
+              'Enjoy your first 10 scans for free!\nUnlock lifetime unlimited access for just \$2.99',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.4),
+                fontSize: 12,
+                height: 1.5,
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: SizedBox(
+              height: 40,
+              child: OutlinedButton(
+                onPressed: _isBuyingFromHome ? null : _buyProductFromHome,
+                style: OutlinedButton.styleFrom(
+                  side: BorderSide(
+                    color: _neonGreen.withValues(alpha: _isBuyingFromHome ? 0.3 : 0.6),
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                ),
+                child: _isBuyingFromHome
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: _neonGreen,
+                        ),
+                      )
+                    : const Text(
+                        'Get Unlimited Access',
+                        style: TextStyle(
+                          color: _neonGreen,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
