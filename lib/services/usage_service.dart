@@ -1,7 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 class UsageService {
-  static const _maxFreeScans = 20;
+  static const _maxFreeScans = 10;
   static const _remainingScansKey = 'remaining_scans';
   static const _isPremiumKey = 'is_premium';
 

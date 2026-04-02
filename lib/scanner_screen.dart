@@ -9,6 +9,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'screens/paywall_screen.dart';
+import 'services/stt_service.dart';
 import 'services/usage_service.dart';
 
 // Fraction of the frame sent to ML Kit (centre region).
@@ -44,8 +45,10 @@ class _ScannerScreenState extends State<ScannerScreen>
   bool _isScanning = false;
   bool _flashOn = false;
   final _usageService = UsageService();
+  final _sttService = SttService();
   int _remainingScans = 20;
   bool _isPremiumUser = false;
+  bool _isListening = false;
 
   // Rolling window of recent frame results: true = any text detected, false = none
   final List<bool> _recentFrameResults = [];
@@ -393,6 +396,37 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
   }
 
+  Future<void> _toggleVoiceInput() async {
+    if (_isListening) {
+      await _sttService.stopListening();
+      setState(() => _isListening = false);
+      if (_searchCtl.text.trim().isNotEmpty) {
+        _startScan();
+      }
+      return;
+    }
+
+    final started = await _sttService.startListening((text) {
+      if (!mounted) return;
+      setState(() {
+        _searchCtl.text = text;
+        _searchCtl.selection =
+            TextSelection.collapsed(offset: text.length);
+      });
+    });
+
+    if (started) {
+      setState(() => _isListening = true);
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Mikrofon nije dostupan. Proverite dozvole.'),
+          backgroundColor: Colors.redAccent,
+        ),
+      );
+    }
+  }
+
   Future<void> _startScan() async {
     final term = _searchCtl.text.trim();
     if (term.isEmpty) return;
@@ -426,6 +460,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     _searchFocusNode.dispose();
     _searchCtl.dispose();
     _persistTimer?.cancel();
+    _sttService.dispose();
     _cameraController?.stopImageStream().catchError((_) {});
     _cameraController?.dispose();
     _textRecognizer.close();
@@ -448,7 +483,7 @@ class _ScannerScreenState extends State<ScannerScreen>
         bg = Colors.orange.shade800;
       case _ScanQuality.noText:
         icon = Icons.search_off;
-        label = 'No text detected — point at a shelf';
+        label = 'No text detected';
         bg = Colors.blueGrey.shade700;
       case _ScanQuality.initializing:
         return const SizedBox.shrink();
@@ -537,6 +572,16 @@ class _ScannerScreenState extends State<ScannerScreen>
                       TextStyle(color: Colors.white.withValues(alpha: 0.5)),
                   prefixIcon: Icon(Icons.search,
                       color: Colors.white.withValues(alpha: 0.7)),
+                  suffixIcon: GestureDetector(
+                    onTap: _toggleVoiceInput,
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: _isListening
+                          ? const _PulsingMic()
+                          : Icon(Icons.mic_none,
+                              color: Colors.white.withValues(alpha: 0.5)),
+                    ),
+                  ),
                   border: InputBorder.none,
                   contentPadding: const EdgeInsets.symmetric(
                       horizontal: 20, vertical: 16),
@@ -605,6 +650,7 @@ class _ScannerScreenState extends State<ScannerScreen>
                                         overflow: TextOverflow.ellipsis),
                                   ),
                                   GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
                                     onTap: () {
                                       setState(() {
                                         _recentSearches.remove(term);
@@ -612,10 +658,11 @@ class _ScannerScreenState extends State<ScannerScreen>
                                       _saveRecentSearches();
                                     },
                                     child: Padding(
-                                      padding: const EdgeInsets.all(4),
+                                      padding: const EdgeInsets.symmetric(
+                                          horizontal: 12, vertical: 12),
                                       child: Icon(Icons.close,
                                           color: Colors.white.withValues(alpha: 0.35),
-                                          size: 16),
+                                          size: 18),
                                     ),
                                   ),
                                 ],
@@ -845,7 +892,7 @@ class _ScannerScreenState extends State<ScannerScreen>
                       border: Border.all(color: _glassBorder),
                     ),
                     child: Text(
-                      'Free scans: $_remainingScans/20',
+                      'Free scans: $_remainingScans/10',
                       style: TextStyle(
                         color: _remainingScans < 5
                             ? Colors.orangeAccent
@@ -1073,4 +1120,41 @@ class _CornerBracketPainter extends CustomPainter {
   @override
   bool shouldRepaint(_CornerBracketPainter oldDelegate) =>
       oldDelegate.matchRects != matchRects;
+}
+
+class _PulsingMic extends StatefulWidget {
+  const _PulsingMic();
+
+  @override
+  State<_PulsingMic> createState() => _PulsingMicState();
+}
+
+class _PulsingMicState extends State<_PulsingMic>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween(begin: 0.4, end: 1.0).animate(
+        CurvedAnimation(parent: _ctl, curve: Curves.easeInOut),
+      ),
+      child: const Icon(Icons.mic, color: _neonGreen),
+    );
+  }
 }
