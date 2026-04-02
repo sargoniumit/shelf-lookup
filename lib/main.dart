@@ -12,7 +12,7 @@ class ShelfFinderApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Shelf Lookup',
+      title: 'SpotText',
       theme: ThemeData(
         colorSchemeSeed: Colors.teal,
         useMaterial3: true,
