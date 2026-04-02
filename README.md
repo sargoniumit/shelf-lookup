@@ -1,4 +1,4 @@
-# shelf_finder
+# SpotText
 
 A new Flutter project.
 
