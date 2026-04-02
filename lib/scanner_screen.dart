@@ -51,6 +51,7 @@ class _ScannerScreenState extends State<ScannerScreen>
   bool _isPremiumUser = false;
   bool _isListening = false;
   bool _isBuyingFromHome = false;
+  bool _hasActiveMatch = false;
   StreamSubscription<List<PurchaseDetails>>? _iapSubscription;
   static const _productId = 'spottext_full_unlock';
 
@@ -197,11 +198,14 @@ class _ScannerScreenState extends State<ScannerScreen>
         if (rects.isNotEmpty) {
           _persistTimer?.cancel();
           _persistTimer = null;
-          await _usageService.decrementScanCount(matchedTexts.join(' '));
-          await _loadUsageInfo();
-          if (_remainingScans <= 0 && !_isPremiumUser) {
-            _stopAndShowPaywall();
-            return;
+          if (!_hasActiveMatch) {
+            _hasActiveMatch = true;
+            await _usageService.decrementScanCount(matchedTexts.join(' '));
+            await _loadUsageInfo();
+            if (_remainingScans <= 0 && !_isPremiumUser) {
+              _stopAndShowPaywall();
+              return;
+            }
           }
           setState(() {
             _displayRects = rects;
@@ -211,6 +215,7 @@ class _ScannerScreenState extends State<ScannerScreen>
           // Keep _displayRects visible for 1 second after last detection
           _persistTimer = Timer(const Duration(seconds: 1), () {
             if (mounted && !_isDisposed) {
+              _hasActiveMatch = false;
               setState(() {
                 _displayRects = [];
                 _displayImageSize = null;
