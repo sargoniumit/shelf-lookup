@@ -1,4 +1,4 @@
-package com.shelffinder.shelf_finder
+package com.sargoniumIT.spot_text
 
 import io.flutter.embedding.android.FlutterActivity
 
