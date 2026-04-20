@@ -52,6 +52,8 @@ class _ScannerScreenState extends State<ScannerScreen>
   bool _isListening = false;
   bool _isBuyingFromHome = false;
   bool _hasActiveMatch = false;
+  bool _isLandscapeMode = false;
+  int _effectiveRotation = 0;
   StreamSubscription<List<PurchaseDetails>>? _iapSubscription;
   static const _productId = 'spottext_full_unlock';
 
@@ -210,6 +212,7 @@ class _ScannerScreenState extends State<ScannerScreen>
           setState(() {
             _displayRects = rects;
             _displayImageSize = fullSize;
+            _effectiveRotation = crop.adjustedRotation;
           });
         } else if (_displayRects.isNotEmpty && _persistTimer == null) {
           // Keep _displayRects visible for 1 second after last detection
@@ -264,18 +267,13 @@ class _ScannerScreenState extends State<ScannerScreen>
     final camera = _cameraController?.description;
     if (camera == null) return null;
 
-    // Rotation
+    // Rotation – adjust for device orientation so ML Kit boxes match preview
     final sensorOrientation = camera.sensorOrientation;
-    final InputImageRotation rotation;
-    if (camera.lensDirection == CameraLensDirection.front) {
-      rotation = InputImageRotationValue.fromRawValue(
-            (sensorOrientation + 360) % 360,
-          ) ??
-          InputImageRotation.rotation0deg;
-    } else {
-      rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ??
-          InputImageRotation.rotation0deg;
-    }
+    final adjustedDeg = _isLandscapeMode
+        ? (sensorOrientation + 270) % 360 // subtract 90° for landscape
+        : sensorOrientation;
+    final rotation = InputImageRotationValue.fromRawValue(adjustedDeg) ??
+        InputImageRotation.rotation0deg;
 
     final format = InputImageFormatValue.fromRawValue(image.format.raw);
     if (format == null) return null;
@@ -326,7 +324,7 @@ class _ScannerScreenState extends State<ScannerScreen>
     // Offset to map ML Kit boxes (rotated-crop coords) → full rotated-image coords.
     // A centred crop stays centred after rotation.
     final Offset rotatedOffset;
-    if (sensorOrientation == 90 || sensorOrientation == 270) {
+    if (adjustedDeg == 90 || adjustedDeg == 270) {
       rotatedOffset = Offset((h - cropH) / 2.0, (w - cropW) / 2.0);
     } else {
       rotatedOffset = Offset((w - cropW) / 2.0, (h - cropH) / 2.0);
@@ -342,7 +340,11 @@ class _ScannerScreenState extends State<ScannerScreen>
       ),
     );
 
-    return _CropResult(inputImage: inputImage, rotatedOffset: rotatedOffset);
+    return _CropResult(
+      inputImage: inputImage,
+      rotatedOffset: rotatedOffset,
+      adjustedRotation: adjustedDeg,
+    );
   }
 
   void _stopAndShowPaywall() {
@@ -614,6 +616,84 @@ class _ScannerScreenState extends State<ScannerScreen>
     );
   }
 
+  void _showAboutInfo() {
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _neonGreen.withValues(alpha: 0.15),
+                ),
+                child: const Icon(Icons.document_scanner_outlined,
+                    color: _neonGreen, size: 32),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'SpotText',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              const Text(
+                'Version 1.0.0',
+                style: TextStyle(color: Colors.white54, fontSize: 13),
+              ),
+              const SizedBox(height: 16),
+              const Divider(color: Colors.white12),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Icon(Icons.code,
+                      color: Colors.white.withValues(alpha: 0.5), size: 18),
+                  const SizedBox(width: 10),
+                  const Text(
+                    'Developer: SargoniumIT',
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Icon(Icons.email_outlined,
+                      color: Colors.white.withValues(alpha: 0.5), size: 18),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text(
+                      'sargoniumit@gmail.com',
+                      style: TextStyle(color: Colors.white70, fontSize: 14),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  'Close',
+                  style: TextStyle(color: Colors.white54),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ---- Build helpers ----
 
   Widget _buildTitle(EdgeInsets pad) {
@@ -851,20 +931,27 @@ class _ScannerScreenState extends State<ScannerScreen>
     );
   }
 
-  Widget _buildSearchBar(EdgeInsets pad, {required bool showScanButton}) {
+  Widget _buildSearchBar(EdgeInsets pad,
+      {required bool showScanButton, bool isLandscape = false}) {
+    final hPad = isLandscape
+        ? MediaQuery.of(context).size.width * 0.08
+        : 16.0;
     return Positioned(
-      top: pad.top + 38,
-      left: 16,
-      right: 16,
+      top: pad.top + (isLandscape ? 6 : 38),
+      left: hPad,
+      right: hPad,
       child: _buildSearchColumn(showScanButton: showScanButton),
     );
   }
 
-  Widget _buildBottomBar(EdgeInsets pad) {
+  Widget _buildBottomBar(EdgeInsets pad, {bool isLandscape = false}) {
+    final hPad = isLandscape
+        ? MediaQuery.of(context).size.width * 0.25
+        : 16.0;
     return Positioned(
-      bottom: pad.bottom + 16,
-      left: 16,
-      right: 16,
+      bottom: pad.bottom + (isLandscape ? 8 : 16),
+      left: hPad,
+      right: hPad,
       child: ClipRRect(
         borderRadius: BorderRadius.circular(28),
         child: BackdropFilter(
@@ -954,45 +1041,66 @@ class _ScannerScreenState extends State<ScannerScreen>
   @override
   Widget build(BuildContext context) {
     final pad = MediaQuery.of(context).padding;
+    final mSize = MediaQuery.of(context).size;
+    _isLandscapeMode = mSize.width > mSize.height;
     final controller = _cameraController;
     final cameraActive =
         controller != null && controller.value.isInitialized && _cameraReady;
 
     // ---------- Input-first mode (no camera yet) ----------
     if (!cameraActive) {
+      final homeLandscape = _isLandscapeMode;
+      final homeHPad = homeLandscape ? mSize.width * 0.15 : 16.0;
+
       return Scaffold(
         backgroundColor: const Color(0xFF121212),
         resizeToAvoidBottomInset: true,
-        body: Center(
-          child: SingleChildScrollView(
-            padding: EdgeInsets.only(
-              top: pad.top + 40,
-              bottom: pad.bottom + 40,
-              left: 16,
-              right: 16,
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'SpotText',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.7),
-                    fontSize: 26,
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 1.5,
-                  ),
+        body: Stack(
+          children: [
+            Center(
+              child: SingleChildScrollView(
+                padding: EdgeInsets.only(
+                  top: pad.top + (homeLandscape ? 16 : 40),
+                  bottom: pad.bottom + (homeLandscape ? 16 : 40),
+                  left: homeHPad,
+                  right: homeHPad,
                 ),
-                const SizedBox(height: 20),
-                _buildSearchColumn(showScanButton: true),
-              ],
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'SpotText',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: homeLandscape ? 22 : 26,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 1.5,
+                      ),
+                    ),
+                    SizedBox(height: homeLandscape ? 12 : 20),
+                    _buildSearchColumn(showScanButton: true),
+                  ],
+                ),
+              ),
             ),
-          ),
+            Positioned(
+              top: pad.top + 8,
+              right: homeLandscape ? pad.right + 8 : 8,
+              child: IconButton(
+                onPressed: _showAboutInfo,
+                icon: Icon(Icons.info_outline,
+                    color: Colors.white.withValues(alpha: 0.5), size: 24),
+              ),
+            ),
+          ],
         ),
       );
     }
 
     // ---------- Camera scanning mode ----------
+    final isLandscape = _isLandscapeMode;
+    final hPad = isLandscape ? mSize.width * 0.08 : 16.0;
+
     return Scaffold(
       backgroundColor: Colors.black,
       resizeToAvoidBottomInset: false,
@@ -1013,19 +1121,18 @@ class _ScannerScreenState extends State<ScannerScreen>
               painter: _CornerBracketPainter(
                 matchRects: _displayRects,
                 imageSize: _displayImageSize!,
-                sensorOrientation:
-                    controller.description.sensorOrientation,
+                sensorOrientation: _effectiveRotation,
               ),
             ),
 
           // ---- Title ----
-          _buildTitle(pad),
+          if (!isLandscape) _buildTitle(pad),
 
-          // ---- Scan counter (top-right, below title) ----
+          // ---- Scan counter (top-right) ----
           if (!_isPremiumUser)
             Positioned(
-              top: pad.top + 10,
-              right: 16,
+              top: pad.top + (isLandscape ? 6 : 10),
+              right: isLandscape ? pad.right + 12 : 16,
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
                 child: BackdropFilter(
@@ -1054,14 +1161,15 @@ class _ScannerScreenState extends State<ScannerScreen>
             ),
 
           // ---- Search bar (no Scan button in camera mode) ----
-          _buildSearchBar(pad, showScanButton: false),
+          _buildSearchBar(pad,
+              showScanButton: false, isLandscape: isLandscape),
 
           // ---- Speed banner (below search bar) ----
           if (_isScanning && _scanQuality != _ScanQuality.initializing)
             Positioned(
-              top: pad.top + 106,
-              left: 16,
-              right: 16,
+              top: pad.top + (isLandscape ? 56 : 106),
+              left: hPad,
+              right: hPad,
               child: Center(
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 300),
@@ -1073,9 +1181,9 @@ class _ScannerScreenState extends State<ScannerScreen>
           // ---- "Found" notification above bottom bar ----
           if (_displayRects.isNotEmpty)
             Positioned(
-              bottom: pad.bottom + 110,
-              left: 16,
-              right: 16,
+              bottom: pad.bottom + (isLandscape ? 80 : 110),
+              left: hPad,
+              right: hPad,
               child: Center(
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(24),
@@ -1113,7 +1221,7 @@ class _ScannerScreenState extends State<ScannerScreen>
             ),
 
           // ---- Glass bottom action bar ----
-          _buildBottomBar(pad),
+          _buildBottomBar(pad, isLandscape: isLandscape),
         ],
       ),
     );
@@ -1126,7 +1234,12 @@ class _ScannerScreenState extends State<ScannerScreen>
 class _CropResult {
   final InputImage inputImage;
   final Offset rotatedOffset;
-  const _CropResult({required this.inputImage, required this.rotatedOffset});
+  final int adjustedRotation;
+  const _CropResult({
+    required this.inputImage,
+    required this.rotatedOffset,
+    required this.adjustedRotation,
+  });
 }
 
 enum _ScanQuality { initializing, good, tooFast, noText }
@@ -1140,8 +1253,9 @@ class _ScanGuidePainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final guideW = size.width * cropFraction;
-    final guideH = size.height * 0.45;
+    final isLandscape = size.width > size.height;
+    final guideW = isLandscape ? size.width * 0.80 : size.width * cropFraction;
+    final guideH = isLandscape ? size.height * 0.30 : size.height * 0.45;
     final left = (size.width - guideW) / 2;
     final top = (size.height - guideH) / 2;
     final guideRect = Rect.fromLTWH(left, top, guideW, guideH);
