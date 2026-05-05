@@ -166,7 +166,12 @@ class _PaywallScreenState extends State<PaywallScreen> {
 
     final product = response.productDetails.first;
     final purchaseParam = PurchaseParam(productDetails: product);
-    await _iap.buyNonConsumable(purchaseParam: purchaseParam);
+    try {
+      await _iap.buyNonConsumable(purchaseParam: purchaseParam);
+    } catch (_) {
+      // purchase dialog failed to open
+    }
+    if (mounted) setState(() => _isLoading = false);
   }
 
   Future<void> _restorePurchases() async {

@@ -175,7 +175,7 @@ class _ScannerScreenState extends State<ScannerScreen>
           .trim()
           .toLowerCase()
           .split(RegExp(r'\s+'))
-          .where((w) => w.isNotEmpty)
+          .where((w) => w.length >= 2)
           .toList();
       final rects = <Rect>[];
       final matchedTexts = <String>[];
@@ -502,9 +502,14 @@ class _ScannerScreenState extends State<ScannerScreen>
     }
 
     final product = response.productDetails.first;
-    await iap.buyNonConsumable(
-      purchaseParam: PurchaseParam(productDetails: product),
-    );
+    try {
+      await iap.buyNonConsumable(
+        purchaseParam: PurchaseParam(productDetails: product),
+      );
+    } catch (_) {
+      // purchase dialog failed to open
+    }
+    if (mounted) setState(() => _isBuyingFromHome = false);
   }
 
   Future<void> _onHomePurchaseUpdated(
