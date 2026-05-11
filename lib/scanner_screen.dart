@@ -1060,44 +1060,44 @@ class _ScannerScreenState extends State<ScannerScreen>
       return Scaffold(
         backgroundColor: const Color(0xFF121212),
         resizeToAvoidBottomInset: true,
-        body: Stack(
-          children: [
-            Center(
-              child: SingleChildScrollView(
-                padding: EdgeInsets.only(
-                  top: pad.top + (homeLandscape ? 16 : 40),
-                  bottom: pad.bottom + (homeLandscape ? 16 : 40),
-                  left: homeHPad,
-                  right: homeHPad,
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'SpotText',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.7),
-                        fontSize: homeLandscape ? 22 : 26,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 1.5,
+        body: SafeArea(
+          child: Stack(
+            children: [
+              Center(
+                child: SingleChildScrollView(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: homeHPad,
+                    vertical: homeLandscape ? 16 : 40,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'SpotText',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.7),
+                          fontSize: homeLandscape ? 22 : 26,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 1.5,
+                        ),
                       ),
-                    ),
-                    SizedBox(height: homeLandscape ? 12 : 20),
-                    _buildSearchColumn(showScanButton: true),
-                  ],
+                      SizedBox(height: homeLandscape ? 12 : 20),
+                      _buildSearchColumn(showScanButton: true),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            Positioned(
-              top: pad.top + 8,
-              right: homeLandscape ? pad.right + 8 : 8,
-              child: IconButton(
-                onPressed: _showAboutInfo,
-                icon: Icon(Icons.info_outline,
-                    color: Colors.white.withValues(alpha: 0.5), size: 24),
+              Positioned(
+                top: 8,
+                right: 8,
+                child: IconButton(
+                  onPressed: _showAboutInfo,
+                  icon: Icon(Icons.info_outline,
+                      color: Colors.white.withValues(alpha: 0.5), size: 24),
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       );
     }
@@ -1112,7 +1112,7 @@ class _ScannerScreenState extends State<ScannerScreen>
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // ---- Camera background ----
+          // ---- Camera background (edge-to-edge) ----
           CameraPreview(controller),
 
           // ---- Scan-area guide (subtle dim) ----
@@ -1130,103 +1130,110 @@ class _ScannerScreenState extends State<ScannerScreen>
               ),
             ),
 
-          // ---- Title ----
-          if (!isLandscape) _buildTitle(pad),
+          // ---- UI overlay with SafeArea ----
+          SafeArea(
+            child: Stack(
+              children: [
+                // ---- Title ----
+                if (!isLandscape) _buildTitle(pad),
 
-          // ---- Scan counter (top-right) ----
-          if (!_isPremiumUser)
-            Positioned(
-              top: pad.top + (isLandscape ? 6 : 10),
-              right: isLandscape ? pad.right + 12 : 16,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: BackdropFilter(
-                  filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: _glassWhite,
+                // ---- Scan counter (top-right) ----
+                if (!_isPremiumUser)
+                  Positioned(
+                    top: isLandscape ? 6 : 10,
+                    right: isLandscape ? 12 : 16,
+                    child: ClipRRect(
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: _glassBorder),
-                    ),
-                    child: Text(
-                      'Free scans: $_remainingScans/10',
-                      style: TextStyle(
-                        color: _remainingScans < 5
-                            ? Colors.orangeAccent
-                            : Colors.white70,
-                        fontSize: 11,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-
-          // ---- Search bar (no Scan button in camera mode) ----
-          _buildSearchBar(pad,
-              showScanButton: false, isLandscape: isLandscape),
-
-          // ---- Speed banner (below search bar) ----
-          if (_isScanning && _scanQuality != _ScanQuality.initializing)
-            Positioned(
-              top: pad.top + (isLandscape ? 56 : 106),
-              left: hPad,
-              right: hPad,
-              child: Center(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: _buildSpeedBanner(),
-                ),
-              ),
-            ),
-
-          // ---- "Found" notification above bottom bar ----
-          if (_displayRects.isNotEmpty)
-            Positioned(
-              bottom: pad.bottom + (isLandscape ? 80 : 110),
-              left: hPad,
-              right: hPad,
-              child: Center(
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(24),
-                  child: BackdropFilter(
-                    filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
-                      decoration: BoxDecoration(
-                        color: _neonGreen.withValues(alpha: 0.25),
-                        borderRadius: BorderRadius.circular(24),
-                        border: Border.all(
-                            color: _neonGreen.withValues(alpha: 0.6)),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.check_circle,
-                              color: _neonGreen, size: 22),
-                          const SizedBox(width: 10),
-                          Text(
-                            'Found "${_searchCtl.text.trim()}"!',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
-                              fontWeight: FontWeight.w600,
+                      child: BackdropFilter(
+                        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: _glassWhite,
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: _glassBorder),
+                          ),
+                          child: Text(
+                            'Free scans: $_remainingScans/10',
+                            style: TextStyle(
+                              color: _remainingScans < 5
+                                  ? Colors.orangeAccent
+                                  : Colors.white70,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
-                        ],
+                        ),
                       ),
                     ),
                   ),
-                ),
-              ),
-            ),
 
-          // ---- Glass bottom action bar ----
-          _buildBottomBar(pad, isLandscape: isLandscape),
+                // ---- Search bar (no Scan button in camera mode) ----
+                _buildSearchBar(pad,
+                    showScanButton: false, isLandscape: isLandscape),
+
+                // ---- Speed banner (below search bar) ----
+                if (_isScanning && _scanQuality != _ScanQuality.initializing)
+                  Positioned(
+                    top: isLandscape ? 56 : 106,
+                    left: hPad,
+                    right: hPad,
+                    child: Center(
+                      child: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 300),
+                        child: _buildSpeedBanner(),
+                      ),
+                    ),
+                  ),
+
+                // ---- "Found" notification above bottom bar ----
+                if (_displayRects.isNotEmpty)
+                  Positioned(
+                    bottom: isLandscape ? 80 : 110,
+                    left: hPad,
+                    right: hPad,
+                    child: Center(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: BackdropFilter(
+                          filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 20, vertical: 12),
+                            decoration: BoxDecoration(
+                              color: _neonGreen.withValues(alpha: 0.25),
+                              borderRadius: BorderRadius.circular(24),
+                              border: Border.all(
+                                  color: _neonGreen.withValues(alpha: 0.6)),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.check_circle,
+                                    color: _neonGreen, size: 22),
+                                const SizedBox(width: 10),
+                                Text(
+                                  'Found "${_searchCtl.text.trim()}"!',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // ---- Glass bottom action bar ----
+                _buildBottomBar(pad, isLandscape: isLandscape),
+              ],
+            ),
+          ),
         ],
       ),
     );
